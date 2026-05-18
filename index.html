@@ -1,0 +1,1092 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="習慣">
+<title>習慣トラッカー</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: "Hiragino Mincho ProN", "Yu Mincho", serif;
+    background: #f5f1e8;
+    -webkit-text-size-adjust: 100%;
+    -webkit-tap-highlight-color: transparent;
+    color: #2c2c2c;
+  }
+  input, textarea, button { font-family: inherit; -webkit-appearance: none; appearance: none; border-radius: 0; }
+  input:focus, textarea:focus { outline: none; }
+  button { cursor: pointer; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<!-- React 18 -->
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<!-- Babel for in-browser JSX -->
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<!-- Firebase (compat = script tag対応) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
+
+<!-- ▼▼▼ Firebase設定（Firebase Console で作成 → ここに貼り付け）▼▼▼ -->
+<script>
+const firebaseConfig = {
+  apiKey: "YOUR_API_KEY",
+  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+  projectId: "YOUR_PROJECT_ID",
+  storageBucket: "YOUR_PROJECT_ID.appspot.com",
+  messagingSenderId: "YOUR_SENDER_ID",
+  appId: "YOUR_APP_ID"
+};
+</script>
+<!-- ▲▲▲ ここまで ▲▲▲ -->
+
+<script>
+// 設定チェック
+if (firebaseConfig.apiKey === "YOUR_API_KEY") {
+  document.getElementById('root').innerHTML =
+    '<div style="padding:40px 24px;font-family:serif;line-height:1.8;color:#2c2c2c;background:#f5f1e8;height:100vh;">' +
+    '<div style="font-size:18px;margin-bottom:16px;">⚙ Firebase設定が未入力</div>' +
+    '<div style="font-size:13px;color:#6b5d3f;">このHTMLファイルを開いて、上部の <code>firebaseConfig</code> をFirebase Consoleの値に置き換えてください。</div>' +
+    '</div>';
+  throw new Error('Firebase not configured');
+}
+
+// Firebase初期化
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
+const firestore = firebase.firestore();
+
+// オフライン永続化（接続不安定な時もキャッシュから読める）
+firestore.enablePersistence({ synchronizeTabs: true }).catch(e => {
+  console.warn('永続化失敗（複数タブの場合は無視可）:', e.code);
+});
+
+// ──────────────────────────────────────────────────────
+// localStorage互換APIをFirestoreで実装
+// 既存コードのwindow.storage.get/setをそのまま使える
+// ──────────────────────────────────────────────────────
+const storage = {
+  cache: {},
+  uid: null,
+  ready: false,
+  async loadAll() {
+    if (!this.uid) { this.cache = {}; this.ready = true; return; }
+    try {
+      const doc = await firestore.collection('users').doc(this.uid).get();
+      this.cache = doc.exists ? (doc.data() || {}) : {};
+    } catch (e) {
+      console.error('読込失敗:', e);
+      this.cache = {};
+    }
+    this.ready = true;
+  },
+  async get(key) {
+    const v = this.cache[key];
+    if (v === undefined || v === null) return null;
+    return { key, value: v };
+  },
+  async set(key, value) {
+    this.cache[key] = value;
+    if (!this.uid) return { key, value };
+    try {
+      await firestore.collection('users').doc(this.uid).set({ [key]: value }, { merge: true });
+    } catch (e) {
+      console.error('保存失敗:', e);
+    }
+    return { key, value };
+  },
+  reset() {
+    this.cache = {};
+    this.uid = null;
+    this.ready = false;
+  }
+};
+window.storage = storage;
+
+// ログイン関数（モバイルではリダイレクト推奨）
+window.signInGoogle = async function() {
+  const provider = new firebase.auth.GoogleAuthProvider();
+  try {
+    await auth.signInWithRedirect(provider);
+  } catch (e) {
+    console.error('ログイン失敗:', e);
+    alert('ログインに失敗しました: ' + e.message);
+  }
+};
+window.signOutNow = async function() {
+  await auth.signOut();
+};
+</script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect } = React;
+
+const DAY_LABELS = ['日', '月', '火', '水', '木', '金', '土'];
+
+const dateKey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const formatDateShort = (d) => `${d.getMonth() + 1}/${d.getDate()} (${DAY_LABELS[d.getDay()]})`;
+const parseKey = (key) => { const [y, m, d] = key.split('-').map(Number); return new Date(y, m - 1, d); };
+const isWeekday = (d) => { const day = d.getDay(); return day >= 1 && day <= 5; };
+
+const DEFAULT_MEAL_PRESETS = [
+  { id: 'morning', label: '朝おにぎり',     time: '10:00' },
+  { id: 'lunch',   label: '昼おにぎり',     time: '13:00' },
+  { id: 'soda',    label: '炭酸水 1L',      time: '13:00' },
+  { id: 'bar',     label: 'プロテインバー', time: '16:00' },
+  { id: 'dinner',  label: '夜ごはん 通常',  time: '20:00' },
+];
+
+const DEFAULT_SCHEDULE = {
+  0: { name: '脚・肩',     ex: ['スクワット', 'ショルダープレス', 'カーフレイズ'] },
+  1: { name: '',           ex: [] },
+  2: { name: '胸・三頭',   ex: ['ベンチプレス', 'ダンベルフライ', 'ディップス'] },
+  3: { name: '',           ex: [] },
+  4: { name: '',           ex: [] },
+  5: { name: '背中・二頭', ex: ['デッドリフト', '懸垂', 'バーベルロウ'] },
+  6: { name: '',           ex: [] },
+};
+
+const EPOCH = '1970-01-01';
+const genId = () => `m${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
+const sortHistory = (h) => [...h].sort((a, b) => a.effectiveFrom.localeCompare(b.effectiveFrom));
+const arrEq = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
+
+function lookupHistory(history, dateStr, fallback, valueKey) {
+  let result = fallback;
+  for (const entry of history) {
+    if (entry.effectiveFrom <= dateStr) result = entry[valueKey];
+  }
+  return result;
+}
+
+// ──────────────────────────────────────────────────────
+// メインアプリ
+// ──────────────────────────────────────────────────────
+function App({ onSignOut }) {
+  const [tab, setTab] = useState('meal');
+  const [data, setData] = useState({});
+  const [scheduleHistory, setScheduleHistory] = useState([{ effectiveFrom: EPOCH, schedule: DEFAULT_SCHEDULE }]);
+  const [mealHistory, setMealHistory] = useState([{ effectiveFrom: EPOCH, presets: DEFAULT_MEAL_PRESETS }]);
+  const [loading, setLoading] = useState(true);
+  const [showSettings, setShowSettings] = useState(false);
+  const [showMenuPicker, setShowMenuPicker] = useState(false);
+  const [showWorkoutEdit, setShowWorkoutEdit] = useState(false);
+  const [showMealEdit, setShowMealEdit] = useState(false);
+  const [selectedKey, setSelectedKey] = useState(dateKey(new Date()));
+
+  const todayDate = new Date();
+  const today = dateKey(todayDate);
+
+  useEffect(() => { setSelectedKey(today); }, [tab]);
+  useEffect(() => { loadData(); }, []);
+
+  async function loadData() {
+    try {
+      const r = await window.storage.get('habit-data');
+      setData(r ? r.value : {});
+    } catch { setData({}); }
+
+    let mh = null;
+    try { const r = await window.storage.get('habit-meal-history'); if (r) mh = r.value; } catch {}
+    if (mh && Array.isArray(mh) && mh.length > 0) setMealHistory(sortHistory(mh));
+
+    let sh = null;
+    try { const r = await window.storage.get('habit-schedule-history'); if (r) sh = r.value; } catch {}
+    if (sh && Array.isArray(sh) && sh.length > 0) setScheduleHistory(sortHistory(sh));
+
+    setLoading(false);
+  }
+
+  async function saveData(newData) {
+    setData(newData);
+    try { await window.storage.set('habit-data', newData); } catch (e) { console.error(e); }
+  }
+
+  function appendToHistory(history, valueKey, newValue) {
+    const todayStr = dateKey(new Date());
+    const newHist = [...history];
+    const lastIdx = newHist.length - 1;
+    if (newHist[lastIdx]?.effectiveFrom === todayStr) {
+      newHist[lastIdx] = { effectiveFrom: todayStr, [valueKey]: newValue };
+    } else {
+      newHist.push({ effectiveFrom: todayStr, [valueKey]: newValue });
+    }
+    return newHist;
+  }
+
+  async function saveMealPresets(newPresets) {
+    const newHist = appendToHistory(mealHistory, 'presets', newPresets);
+    setMealHistory(newHist);
+    try { await window.storage.set('habit-meal-history', newHist); } catch (e) { console.error(e); }
+  }
+
+  async function saveSchedule(newSchedule) {
+    const newHist = appendToHistory(scheduleHistory, 'schedule', newSchedule);
+    setScheduleHistory(newHist);
+    try { await window.storage.set('habit-schedule-history', newHist); } catch (e) { console.error(e); }
+  }
+
+  const getMealPresets = (dateStr) => lookupHistory(mealHistory, dateStr, DEFAULT_MEAL_PRESETS, 'presets');
+  const getSchedule    = (dateStr) => lookupHistory(scheduleHistory, dateStr, DEFAULT_SCHEDULE, 'schedule');
+
+  const currentSchedule = getSchedule(today);
+  const currentMealPresets = getMealPresets(today);
+
+  const selectedDate = parseKey(selectedKey);
+  const selectedDow = selectedDate.getDay();
+  const selectedSched = getSchedule(selectedKey);
+  const selectedSlot = selectedSched[selectedDow];
+  const selectedMealPresets = getMealPresets(selectedKey);
+
+  const selectedMeal    = data[selectedKey]?.meal    || { checked: {}, status: null, memo: '' };
+  const selectedWorkout = data[selectedKey]?.workout || { checked: {}, status: null, memo: '' };
+
+  function update(kind, patch) {
+    const cur = data[selectedKey] || {};
+    const existing = cur[kind] || { checked: {}, status: null, memo: '' };
+    saveData({
+      ...data,
+      [selectedKey]: { ...cur, [kind]: { ...existing, ...patch } }
+    });
+  }
+
+  function toggle(kind, id) {
+    const cur = (kind === 'meal' ? selectedMeal : selectedWorkout).checked || {};
+    update(kind, { checked: { ...cur, [id]: !cur[id] } });
+  }
+
+  function setWorkoutMenu(menuChoice) {
+    const cur = data[selectedKey] || {};
+    const existing = cur.workout || { checked: {}, status: null, memo: '' };
+
+    if (menuChoice === null) {
+      const { menuChoice: _omit, ...rest } = existing;
+      saveData({ ...data, [selectedKey]: { ...cur, workout: { ...rest, checked: {} } } });
+    } else {
+      const oldEx = existing.menuChoice?.exerciseNames || selectedSlot.ex;
+      const newEx = menuChoice.exerciseNames;
+      const changed = !arrEq(oldEx, newEx);
+      const patch = changed ? { menuChoice, checked: {} } : { menuChoice };
+      saveData({ ...data, [selectedKey]: { ...cur, workout: { ...existing, ...patch } } });
+    }
+  }
+
+  function setMealItems(items) {
+    const cur = data[selectedKey] || {};
+    const existing = cur.meal || { checked: {}, status: null, memo: '' };
+    if (items === null) {
+      const { itemsOverride: _omit, ...rest } = existing;
+      saveData({ ...data, [selectedKey]: { ...cur, meal: rest } });
+    } else {
+      saveData({ ...data, [selectedKey]: { ...cur, meal: { ...existing, itemsOverride: items } } });
+    }
+  }
+
+  function calcMealStreak() {
+    let streak = 0;
+    const d = new Date();
+    for (let i = 0; i < 365; i++) {
+      if (!isWeekday(d)) { d.setDate(d.getDate() - 1); continue; }
+      const key = dateKey(d);
+      const rec = data[key]?.meal;
+      if (rec?.status === 'success') streak++;
+      else if (i === 0 && !rec?.status) {}
+      else break;
+      d.setDate(d.getDate() - 1);
+    }
+    return streak;
+  }
+
+  function calcWeekProgress() {
+    const todayD = new Date();
+    const dow = todayD.getDay();
+    const offset = dow === 0 ? 6 : dow - 1;
+    const monday = new Date(todayD);
+    monday.setDate(todayD.getDate() - offset);
+
+    let done = 0;
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(monday);
+      d.setDate(monday.getDate() + i);
+      if (d > todayD) break;
+      if (data[dateKey(d)]?.workout?.status === 'success') done++;
+    }
+    const weeklyGoal = Object.values(currentSchedule).filter(s => s.ex.length > 0).length;
+    return { done, goal: weeklyGoal };
+  }
+
+  function buildCalendar(kind) {
+    const cells = [];
+    const todayD = new Date();
+    const dow = todayD.getDay();
+    const offset = dow === 0 ? 6 : dow - 1;
+    const thisMonday = new Date(todayD);
+    thisMonday.setDate(todayD.getDate() - offset);
+    const start = new Date(thisMonday);
+    start.setDate(thisMonday.getDate() - 21);
+    const todayKey = dateKey(todayD);
+
+    for (let i = 0; i < 28; i++) {
+      const d = new Date(start);
+      d.setDate(start.getDate() + i);
+      const key = dateKey(d);
+      const status = data[key]?.[kind]?.status || null;
+      const isFuture = key > todayKey;
+      const isTodayCell = key === todayKey;
+      const isSelectedCell = key === selectedKey;
+
+      let isTarget = true;
+      if (kind === 'meal') isTarget = isWeekday(d);
+      if (kind === 'workout') {
+        const sched = getSchedule(key);
+        isTarget = sched[d.getDay()].ex.length > 0;
+      }
+
+      cells.push({ key, date: d.getDate(), status, isFuture, isTodayCell, isSelectedCell, isTarget });
+    }
+    return cells;
+  }
+
+  if (loading) {
+    return (
+      <div style={{ background: '#f5f1e8', height: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'serif', color: '#3a3a3a' }}>
+        読み込み中…
+      </div>
+    );
+  }
+
+  const isViewingToday = selectedKey === today;
+  const isFutureSelected = selectedKey > today;
+  const current = tab === 'meal' ? selectedMeal : selectedWorkout;
+
+  const mealItems = selectedMeal.itemsOverride || selectedMealPresets;
+  const isMealCustomized = !!selectedMeal.itemsOverride;
+
+  const workoutMenuChoice = selectedWorkout.menuChoice;
+  const effectiveMenuName = workoutMenuChoice ? workoutMenuChoice.menuName     : selectedSlot.name;
+  const effectiveExNames  = workoutMenuChoice ? workoutMenuChoice.exerciseNames : selectedSlot.ex;
+  const workoutItems = effectiveExNames.map((name, i) => ({ id: `ex${i}`, label: name, time: '' }));
+  const isWorkoutCustomized = !!workoutMenuChoice;
+
+  const items = tab === 'meal' ? mealItems : workoutItems;
+  const calendar = buildCalendar(tab);
+  const mealStreak = calcMealStreak();
+  const weekProg = calcWeekProgress();
+  const isMealTargetSelected = isWeekday(selectedDate);
+
+  const availableMenus = (() => {
+    const map = new Map();
+    Object.values(currentSchedule).forEach(s => {
+      if (s.ex.length > 0 && !map.has(s.name)) {
+        map.set(s.name, { menuName: s.name, exerciseNames: [...s.ex] });
+      }
+    });
+    return Array.from(map.values());
+  })();
+
+  return (
+    <div style={{
+      background: '#f5f1e8',
+      height: '100dvh',
+      display: 'flex',
+      flexDirection: 'column',
+      fontFamily: '"Hiragino Mincho ProN", "Yu Mincho", serif',
+      color: '#2c2c2c',
+      maxWidth: '393px',
+      margin: '0 auto',
+      position: 'relative',
+      overflow: 'hidden',
+    }}>
+      <div style={{ padding: '10px 16px 6px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #d8d0bf', flexShrink: 0 }}>
+        <div style={{ fontSize: '13px', letterSpacing: '0.05em' }}>{formatDateShort(todayDate)}</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          {tab === 'meal' ? (
+            <div style={{ fontSize: '11px', color: '#6b5d3f' }}>
+              平日連続 <span style={{ fontSize: '17px', fontWeight: 600, color: '#3a3a3a' }}>{mealStreak}</span> 日
+            </div>
+          ) : (
+            <div style={{ fontSize: '11px', color: '#6b5d3f' }}>
+              今週 <span style={{ fontSize: '17px', fontWeight: 600, color: '#3a3a3a' }}>{weekProg.done}</span>
+              <span style={{ color: '#8a7d5e' }}>/{weekProg.goal}</span>
+            </div>
+          )}
+          <button onClick={() => setShowSettings(true)} style={{
+            background: 'transparent', border: 'none',
+            fontSize: '17px', color: '#6b5d3f', padding: '0', lineHeight: 1,
+          }}>⚙</button>
+        </div>
+      </div>
+
+      <div style={{ padding: '10px 16px 4px', flexShrink: 0 }}>
+        <div style={{ fontSize: '9px', letterSpacing: '0.2em', color: '#8a7d5e', marginBottom: '6px' }}>
+          LAST 4 WEEKS · {tab === 'meal' ? 'MEAL' : 'TRAINING'}
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '3px', marginBottom: '3px' }}>
+          {['月','火','水','木','金','土','日'].map(l => (
+            <div key={l} style={{ fontSize: '10px', textAlign: 'center', color: '#8a7d5e' }}>{l}</div>
+          ))}
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: '3px' }}>
+          {calendar.map((c, i) => {
+            const bg = c.status === 'success' ? '#5a6b3f' : c.status === 'fail' ? '#8b4a3f' : 'transparent';
+            const fg = c.status ? '#f5f1e8' : !c.isTarget ? '#c8bfa8' : c.isFuture ? '#a89976' : '#6b5d3f';
+            const border = c.isSelectedCell ? '2px solid #2c2c2c'
+                         : c.isTodayCell    ? '1.5px solid #6b5d3f'
+                         : '1px solid #e0d8c5';
+            const opacity = c.status ? 1 : (c.isTarget ? 1 : 0.4);
+            return (
+              <button key={i}
+                onClick={() => setSelectedKey(c.key)}
+                style={{
+                  aspectRatio: '1',
+                  background: bg, border,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: '10px', color: fg, opacity,
+                  padding: 0, fontFamily: 'inherit',
+                }}>{c.date}</button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', borderTop: '1px solid #d8d0bf', borderBottom: '1px solid #d8d0bf', flexShrink: 0 }}>
+        <button onClick={() => setTab('meal')} style={{
+          flex: 1, padding: '9px', background: tab === 'meal' ? '#2c2c2c' : 'transparent',
+          color: tab === 'meal' ? '#f5f1e8' : '#6b5d3f',
+          border: 'none',
+          fontFamily: 'inherit', fontSize: '11px', letterSpacing: '0.2em',
+        }}>食事</button>
+        <button onClick={() => setTab('workout')} style={{
+          flex: 1, padding: '9px', background: tab === 'workout' ? '#2c2c2c' : 'transparent',
+          color: tab === 'workout' ? '#f5f1e8' : '#6b5d3f',
+          border: 'none',
+          fontFamily: 'inherit', fontSize: '11px', letterSpacing: '0.2em',
+        }}>トレーニング</button>
+      </div>
+
+      {!isViewingToday && (
+        <div style={{
+          padding: '5px 16px',
+          background: isFutureSelected ? '#e6e0d0' : '#ebe4d0',
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          fontSize: '10px', color: '#6b5d3f',
+          borderBottom: '1px solid #d8d0bf', flexShrink: 0,
+        }}>
+          <span>{formatDateShort(selectedDate)} を編集中 {isFutureSelected && '（予定）'}</span>
+          <button onClick={() => setSelectedKey(today)} style={{
+            background: 'transparent', border: '1px solid #6b5d3f',
+            color: '#6b5d3f',
+            fontFamily: 'inherit', fontSize: '9px', padding: '2px 7px',
+            letterSpacing: '0.1em',
+          }}>今日に戻る</button>
+        </div>
+      )}
+
+      <div style={{ flex: 1, padding: '8px 16px 12px', display: 'flex', flexDirection: 'column', gap: '5px', overflow: 'auto' }}>
+        {tab === 'meal' && !isMealTargetSelected && (
+          <div style={{ padding: '2px 0', fontSize: '10px', color: '#8a7d5e' }}>※ 土日のため対象外</div>
+        )}
+
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px', marginBottom: '2px' }}>
+          <div style={{ fontSize: '11px', color: '#8a7d5e', display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+            {tab === 'workout' ? (effectiveMenuName || '休息日') : '本日の食事'}
+            {tab === 'workout' && isWorkoutCustomized && (
+              <span style={{ fontSize: '9px', color: '#8b4a3f', border: '1px solid #8b4a3f', padding: '0 4px' }}>個別設定</span>
+            )}
+            {tab === 'meal' && isMealCustomized && (
+              <span style={{ fontSize: '9px', color: '#8b4a3f', border: '1px solid #8b4a3f', padding: '0 4px' }}>個別設定</span>
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: '4px' }}>
+            {tab === 'workout' && (
+              <button onClick={() => setShowMenuPicker(true)} style={{
+                background: 'transparent', border: '1px solid #6b5d3f',
+                color: '#6b5d3f',
+                fontFamily: 'inherit', fontSize: '10px', padding: '2px 7px',
+              }}>切替</button>
+            )}
+            <button onClick={() => tab === 'workout' ? setShowWorkoutEdit(true) : setShowMealEdit(true)} style={{
+              background: 'transparent', border: '1px solid #6b5d3f',
+              color: '#6b5d3f',
+              fontFamily: 'inherit', fontSize: '10px', padding: '2px 7px',
+            }}>編集</button>
+          </div>
+        </div>
+
+        {items.length === 0 ? (
+          <div style={{ padding: '14px 0', color: '#8a7d5e', fontSize: '12px', textAlign: 'center' }}>
+            {tab === 'workout' ? '休息日（「切替」「編集」で記録可）' : 'メニューなし（「編集」で追加可）'}
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
+            {items.map(it => {
+              const on = current.checked?.[it.id];
+              return (
+                <button key={it.id} onClick={() => toggle(tab, it.id)} style={{
+                  display: 'flex', alignItems: 'center', gap: '9px',
+                  padding: '6px 2px',
+                  background: 'transparent', border: 'none',
+                  borderBottom: '1px solid #eae3d0',
+                  fontSize: '13px', color: '#2c2c2c',
+                  fontFamily: 'inherit', textAlign: 'left',
+                }}>
+                  <span style={{
+                    width: '15px', height: '15px',
+                    border: '1.5px solid #6b5d3f',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    background: on ? '#3a3a3a' : 'transparent',
+                    fontSize: '9px', color: '#f5f1e8',
+                    flexShrink: 0,
+                  }}>{on ? '✓' : ''}</span>
+                  <span style={{ flex: 1, textDecoration: on ? 'line-through' : 'none', opacity: on ? 0.5 : 1 }}>{it.label}</span>
+                  {it.time && <span style={{ fontSize: '10px', color: '#8a7d5e' }}>{it.time}</span>}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {items.length > 0 && (
+          <>
+            <div style={{ display: 'flex', gap: '5px', marginTop: '3px' }}>
+              <button onClick={() => update(tab, { status: current.status === 'success' ? null : 'success' })} style={{
+                flex: 1, padding: '7px',
+                background: current.status === 'success' ? '#5a6b3f' : 'transparent',
+                color: current.status === 'success' ? '#f5f1e8' : '#5a6b3f',
+                border: '1.5px solid #5a6b3f',
+                fontFamily: 'inherit', fontSize: '11px', letterSpacing: '0.1em',
+              }}>守れた</button>
+              <button onClick={() => update(tab, { status: current.status === 'fail' ? null : 'fail' })} style={{
+                flex: 1, padding: '7px',
+                background: current.status === 'fail' ? '#8b4a3f' : 'transparent',
+                color: current.status === 'fail' ? '#f5f1e8' : '#8b4a3f',
+                border: '1.5px solid #8b4a3f',
+                fontFamily: 'inherit', fontSize: '11px', letterSpacing: '0.1em',
+              }}>ダメだった</button>
+            </div>
+
+            <input type="text" placeholder={current.status === 'fail' ? '何があった？（任意）' : 'メモ（任意）'}
+              value={current.memo || ''}
+              onChange={(e) => update(tab, { memo: e.target.value })}
+              style={{
+                padding: '6px 8px', background: 'transparent',
+                border: '1px solid #d8d0bf',
+                fontFamily: 'inherit', fontSize: '11px', color: '#2c2c2c',
+              }}
+            />
+          </>
+        )}
+
+        {items.length === 0 && (
+          <input type="text" placeholder='メモ（任意）'
+            value={current.memo || ''}
+            onChange={(e) => update(tab, { memo: e.target.value })}
+            style={{
+              padding: '6px 8px', background: 'transparent',
+              border: '1px solid #d8d0bf',
+              fontFamily: 'inherit', fontSize: '11px', color: '#2c2c2c',
+              marginTop: '6px',
+            }}
+          />
+        )}
+      </div>
+
+      {showSettings && (
+        <SettingsModal
+          schedule={currentSchedule}
+          mealPresets={currentMealPresets}
+          onSaveSchedule={saveSchedule}
+          onSaveMealPresets={saveMealPresets}
+          onClose={() => setShowSettings(false)}
+          onSignOut={onSignOut}
+        />
+      )}
+
+      {showMenuPicker && (
+        <MenuPickerModal
+          currentChoice={workoutMenuChoice}
+          scheduledMenuName={selectedSlot.name}
+          scheduledExNames={selectedSlot.ex}
+          availableMenus={availableMenus}
+          onPick={(c) => { setWorkoutMenu(c); setShowMenuPicker(false); }}
+          onClose={() => setShowMenuPicker(false)}
+        />
+      )}
+
+      {showWorkoutEdit && (
+        <WorkoutDayEditModal
+          dateLabel={formatDateShort(selectedDate)}
+          initialName={effectiveMenuName || ''}
+          initialExercises={effectiveExNames}
+          isCustomized={isWorkoutCustomized}
+          onSave={(menuName, exerciseNames) => { setWorkoutMenu({ menuName, exerciseNames }); setShowWorkoutEdit(false); }}
+          onReset={() => { setWorkoutMenu(null); setShowWorkoutEdit(false); }}
+          onClose={() => setShowWorkoutEdit(false)}
+        />
+      )}
+
+      {showMealEdit && (
+        <MealDayEditModal
+          dateLabel={formatDateShort(selectedDate)}
+          initialItems={mealItems}
+          isCustomized={isMealCustomized}
+          onSave={(items) => { setMealItems(items); setShowMealEdit(false); }}
+          onReset={() => { setMealItems(null); setShowMealEdit(false); }}
+          onClose={() => setShowMealEdit(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+function MenuPickerModal({ currentChoice, scheduledMenuName, scheduledExNames, availableMenus, onPick, onClose }) {
+  const isScheduledRest = scheduledExNames.length === 0;
+  return (
+    <div style={{
+      position: 'absolute', inset: 0,
+      background: 'rgba(44, 44, 44, 0.5)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      padding: '20px 14px',
+      zIndex: 10,
+    }}>
+      <div style={{
+        background: '#f5f1e8', width: '100%', maxWidth: '340px',
+        padding: '14px 16px 12px', border: '1px solid #d8d0bf',
+        fontFamily: '"Hiragino Mincho ProN", "Yu Mincho", serif', color: '#2c2c2c',
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+          <div style={{ fontSize: '13px', letterSpacing: '0.1em' }}>メニュー切替</div>
+          <button onClick={onClose} style={{ background: 'transparent', border: 'none', fontSize: '15px', color: '#6b5d3f', lineHeight: 1 }}>×</button>
+        </div>
+        <div style={{ fontSize: '9px', color: '#8a7d5e', marginBottom: '10px' }}>この日に当てるメニューを変更</div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          <button onClick={() => onPick(null)} style={{
+            padding: '8px 10px', textAlign: 'left',
+            background: 'transparent', border: '1px solid #d8d0bf', color: '#6b5d3f',
+            fontFamily: 'inherit', fontSize: '12px',
+          }}>
+            ↩ スケジュール通り
+            <span style={{ fontSize: '10px', color: '#8a7d5e', marginLeft: '6px' }}>
+              （{isScheduledRest ? '休息日' : scheduledMenuName}）
+            </span>
+          </button>
+
+          <button onClick={() => onPick({ menuName: '', exerciseNames: [] })} style={{
+            padding: '8px 10px', textAlign: 'left',
+            background: currentChoice && currentChoice.exerciseNames.length === 0 ? '#2c2c2c' : 'transparent',
+            color:      currentChoice && currentChoice.exerciseNames.length === 0 ? '#f5f1e8' : '#6b5d3f',
+            border: '1px solid #d8d0bf', fontFamily: 'inherit', fontSize: '12px',
+          }}>休息にする</button>
+
+          {availableMenus.map((m, i) => {
+            const isSelected = currentChoice && currentChoice.menuName === m.menuName && arrEq(currentChoice.exerciseNames, m.exerciseNames);
+            return (
+              <button key={i} onClick={() => onPick(m)} style={{
+                padding: '8px 10px', textAlign: 'left',
+                background: isSelected ? '#5a6b3f' : 'transparent',
+                color:      isSelected ? '#f5f1e8' : '#2c2c2c',
+                border: '1px solid ' + (isSelected ? '#5a6b3f' : '#d8d0bf'),
+                fontFamily: 'inherit', fontSize: '12px',
+              }}>
+                {m.menuName}
+                <div style={{ fontSize: '9px', color: isSelected ? '#d8d0bf' : '#8a7d5e', marginTop: '2px' }}>
+                  {m.exerciseNames.join(' / ')}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function WorkoutDayEditModal({ dateLabel, initialName, initialExercises, isCustomized, onSave, onReset, onClose }) {
+  const [name, setName] = useState(initialName);
+  const [exText, setExText] = useState(initialExercises.join('\n'));
+  function handleSave() {
+    const exerciseNames = exText.split('\n').map(s => s.trim()).filter(s => s.length > 0);
+    onSave(name.trim(), exerciseNames);
+  }
+  return (
+    <div style={{
+      position: 'absolute', inset: 0, background: 'rgba(44, 44, 44, 0.5)',
+      display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
+      padding: '20px 14px', zIndex: 10, overflow: 'auto',
+    }}>
+      <div style={{
+        background: '#f5f1e8', width: '100%', maxWidth: '340px',
+        padding: '14px 16px 12px', border: '1px solid #d8d0bf',
+        fontFamily: '"Hiragino Mincho ProN", "Yu Mincho", serif', color: '#2c2c2c',
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+          <div style={{ fontSize: '13px', letterSpacing: '0.1em' }}>{dateLabel} のメニュー編集</div>
+          <button onClick={onClose} style={{ background: 'transparent', border: 'none', fontSize: '15px', color: '#6b5d3f', lineHeight: 1 }}>×</button>
+        </div>
+        <div style={{ fontSize: '9px', color: '#8a7d5e', marginBottom: '10px' }}>※ この日だけの設定。他の日には影響しません。</div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '12px' }}>
+          <div style={{ fontSize: '10px', color: '#8a7d5e' }}>メニュー名</div>
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="例: 胸・三頭"
+            style={{ padding: '5px 8px', background: 'transparent', border: '1px solid #d8d0bf', fontFamily: 'inherit', fontSize: '12px', color: '#2c2c2c' }} />
+          <div style={{ fontSize: '10px', color: '#8a7d5e', marginTop: '4px' }}>種目（1行1種目）</div>
+          <textarea value={exText} onChange={(e) => setExText(e.target.value)} placeholder={"ベンチプレス\nダンベルフライ\nディップス"} rows={5}
+            style={{ padding: '5px 8px', background: 'transparent', border: '1px solid #d8d0bf', resize: 'vertical', fontFamily: 'inherit', fontSize: '12px', color: '#2c2c2c' }} />
+        </div>
+
+        <div style={{ display: 'flex', gap: '5px' }}>
+          {isCustomized && (
+            <button onClick={onReset} style={{
+              flex: 1, padding: '7px', background: 'transparent',
+              border: '1px solid #8a7d5e', color: '#8b4a3f',
+              fontFamily: 'inherit', fontSize: '11px', letterSpacing: '0.05em',
+            }}>リセット</button>
+          )}
+          <button onClick={onClose} style={{
+            flex: 1, padding: '7px', background: 'transparent',
+            border: '1px solid #8a7d5e', color: '#6b5d3f',
+            fontFamily: 'inherit', fontSize: '11px', letterSpacing: '0.1em',
+          }}>キャンセル</button>
+          <button onClick={handleSave} style={{
+            flex: 1, padding: '7px', background: '#2c2c2c',
+            border: '1px solid #2c2c2c', color: '#f5f1e8',
+            fontFamily: 'inherit', fontSize: '11px', letterSpacing: '0.1em',
+          }}>保存</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MealDayEditModal({ dateLabel, initialItems, isCustomized, onSave, onReset, onClose }) {
+  const [items, setItems] = useState(() => initialItems.map(it => ({ ...it })));
+
+  function updateItem(i, field, value) {
+    setItems(arr => arr.map((it, idx) => idx === i ? { ...it, [field]: value } : it));
+  }
+  function removeItem(i) { setItems(arr => arr.filter((_, idx) => idx !== i)); }
+  function addItem() { setItems(arr => [...arr, { id: genId(), label: '', time: '' }]); }
+  function handleSave() {
+    const cleaned = items
+      .map(m => ({ id: m.id, label: (m.label || '').trim(), time: (m.time || '').trim() }))
+      .filter(m => m.label.length > 0);
+    onSave(cleaned);
+  }
+
+  return (
+    <div style={{
+      position: 'absolute', inset: 0, background: 'rgba(44, 44, 44, 0.5)',
+      display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
+      padding: '20px 14px', zIndex: 10, overflow: 'auto',
+    }}>
+      <div style={{
+        background: '#f5f1e8', width: '100%', maxWidth: '340px',
+        padding: '14px 16px 12px', border: '1px solid #d8d0bf',
+        fontFamily: '"Hiragino Mincho ProN", "Yu Mincho", serif', color: '#2c2c2c',
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+          <div style={{ fontSize: '13px', letterSpacing: '0.1em' }}>{dateLabel} の食事編集</div>
+          <button onClick={onClose} style={{ background: 'transparent', border: 'none', fontSize: '15px', color: '#6b5d3f', lineHeight: 1 }}>×</button>
+        </div>
+        <div style={{ fontSize: '9px', color: '#8a7d5e', marginBottom: '10px' }}>※ この日だけの設定。他の日には影響しません。</div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', marginBottom: '12px' }}>
+          {items.map((it, i) => (
+            <div key={it.id} style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+              <input value={it.label} onChange={(e) => updateItem(i, 'label', e.target.value)} placeholder="項目名"
+                style={{ flex: 1, padding: '5px 7px', background: 'transparent', border: '1px solid #d8d0bf', fontFamily: 'inherit', fontSize: '12px', color: '#2c2c2c', minWidth: 0 }} />
+              <input value={it.time} onChange={(e) => updateItem(i, 'time', e.target.value)} placeholder="10:00"
+                style={{ width: '52px', padding: '5px 7px', background: 'transparent', border: '1px solid #d8d0bf', fontFamily: 'inherit', fontSize: '11px', color: '#2c2c2c' }} />
+              <button onClick={() => removeItem(i)} style={{
+                width: '24px', height: '24px', padding: 0,
+                background: 'transparent', border: '1px solid #d8d0bf', color: '#8b4a3f',
+                fontFamily: 'inherit', fontSize: '13px', lineHeight: 1,
+              }}>×</button>
+            </div>
+          ))}
+          <button onClick={addItem} style={{
+            padding: '5px', background: 'transparent',
+            border: '1px dashed #8a7d5e', color: '#6b5d3f',
+            fontFamily: 'inherit', fontSize: '11px',
+          }}>＋ 項目を追加</button>
+        </div>
+
+        <div style={{ display: 'flex', gap: '5px' }}>
+          {isCustomized && (
+            <button onClick={onReset} style={{
+              flex: 1, padding: '7px', background: 'transparent',
+              border: '1px solid #8a7d5e', color: '#8b4a3f',
+              fontFamily: 'inherit', fontSize: '11px', letterSpacing: '0.05em',
+            }}>リセット</button>
+          )}
+          <button onClick={onClose} style={{
+            flex: 1, padding: '7px', background: 'transparent',
+            border: '1px solid #8a7d5e', color: '#6b5d3f',
+            fontFamily: 'inherit', fontSize: '11px', letterSpacing: '0.1em',
+          }}>キャンセル</button>
+          <button onClick={handleSave} style={{
+            flex: 1, padding: '7px', background: '#2c2c2c',
+            border: '1px solid #2c2c2c', color: '#f5f1e8',
+            fontFamily: 'inherit', fontSize: '11px', letterSpacing: '0.1em',
+          }}>保存</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SettingsModal({ schedule, mealPresets, onSaveSchedule, onSaveMealPresets, onClose, onSignOut }) {
+  const [section, setSection] = useState('meal');
+  const [draftMeal, setDraftMeal] = useState(() => mealPresets.map(p => ({ ...p })));
+  const [draftSchedule, setDraftSchedule] = useState(() => {
+    const obj = {};
+    [0,1,2,3,4,5,6].forEach(dow => {
+      obj[dow] = {
+        name: schedule[dow]?.name || '',
+        exText: (schedule[dow]?.ex || []).join('\n'),
+        isTraining: (schedule[dow]?.ex || []).length > 0,
+      };
+    });
+    return obj;
+  });
+
+  function updateMealItem(i, field, value) {
+    setDraftMeal(arr => arr.map((it, idx) => idx === i ? { ...it, [field]: value } : it));
+  }
+  function removeMealItem(i) { setDraftMeal(arr => arr.filter((_, idx) => idx !== i)); }
+  function addMealItem() { setDraftMeal(arr => [...arr, { id: genId(), label: '', time: '' }]); }
+
+  function updateDay(dow, field, value) {
+    setDraftSchedule(d => ({ ...d, [dow]: { ...d[dow], [field]: value } }));
+  }
+  function toggleRest(dow) {
+    setDraftSchedule(d => {
+      const cur = d[dow];
+      if (cur.isTraining) return { ...d, [dow]: { name: '', exText: '', isTraining: false } };
+      return { ...d, [dow]: { name: 'トレーニング', exText: '種目1', isTraining: true } };
+    });
+  }
+
+  function handleSave() {
+    const meals = draftMeal
+      .map(m => ({ id: m.id, label: m.label.trim(), time: m.time.trim() }))
+      .filter(m => m.label.length > 0);
+    onSaveMealPresets(meals);
+
+    const sched = {};
+    [0,1,2,3,4,5,6].forEach(dow => {
+      const slot = draftSchedule[dow];
+      if (slot.isTraining) {
+        const ex = slot.exText.split('\n').map(s => s.trim()).filter(s => s.length > 0);
+        sched[dow] = { name: slot.name, ex };
+      } else {
+        sched[dow] = { name: '', ex: [] };
+      }
+    });
+    onSaveSchedule(sched);
+    onClose();
+  }
+
+  return (
+    <div style={{
+      position: 'absolute', inset: 0, background: 'rgba(44, 44, 44, 0.5)',
+      display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
+      padding: '14px 10px', zIndex: 10, overflow: 'auto',
+    }}>
+      <div style={{
+        background: '#f5f1e8', width: '100%', maxWidth: '373px',
+        padding: '14px 14px 12px', border: '1px solid #d8d0bf',
+        fontFamily: '"Hiragino Mincho ProN", "Yu Mincho", serif', color: '#2c2c2c',
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+          <div style={{ fontSize: '13px', letterSpacing: '0.1em' }}>全体設定</div>
+          <button onClick={onClose} style={{ background: 'transparent', border: 'none', fontSize: '15px', color: '#6b5d3f', lineHeight: 1 }}>×</button>
+        </div>
+
+        <div style={{ fontSize: '9px', color: '#8a7d5e', marginBottom: '10px', lineHeight: 1.5 }}>
+          ※ ここでの変更は今日以降に適用。過去の日付や個別編集された日には影響しません。
+        </div>
+
+        <div style={{ display: 'flex', gap: '4px', marginBottom: '12px' }}>
+          <button onClick={() => setSection('meal')} style={{
+            flex: 1, padding: '6px',
+            background: section === 'meal' ? '#2c2c2c' : 'transparent',
+            color: section === 'meal' ? '#f5f1e8' : '#6b5d3f',
+            border: '1px solid ' + (section === 'meal' ? '#2c2c2c' : '#d8d0bf'),
+            fontFamily: 'inherit', fontSize: '11px',
+          }}>食事プリセット</button>
+          <button onClick={() => setSection('workout')} style={{
+            flex: 1, padding: '6px',
+            background: section === 'workout' ? '#2c2c2c' : 'transparent',
+            color: section === 'workout' ? '#f5f1e8' : '#6b5d3f',
+            border: '1px solid ' + (section === 'workout' ? '#2c2c2c' : '#d8d0bf'),
+            fontFamily: 'inherit', fontSize: '11px',
+          }}>トレーニング</button>
+        </div>
+
+        {section === 'meal' && (
+          <div style={{ marginBottom: '12px' }}>
+            <div style={{ fontSize: '10px', color: '#8a7d5e', marginBottom: '6px' }}>毎日の食事メニュー</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+              {draftMeal.map((it, i) => (
+                <div key={it.id} style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                  <input value={it.label} onChange={(e) => updateMealItem(i, 'label', e.target.value)} placeholder="項目名"
+                    style={{ flex: 1, padding: '5px 7px', background: 'transparent', border: '1px solid #d8d0bf', fontFamily: 'inherit', fontSize: '12px', color: '#2c2c2c', minWidth: 0 }} />
+                  <input value={it.time} onChange={(e) => updateMealItem(i, 'time', e.target.value)} placeholder="10:00"
+                    style={{ width: '52px', padding: '5px 7px', background: 'transparent', border: '1px solid #d8d0bf', fontFamily: 'inherit', fontSize: '11px', color: '#2c2c2c' }} />
+                  <button onClick={() => removeMealItem(i)} style={{
+                    width: '24px', height: '24px', padding: 0,
+                    background: 'transparent', border: '1px solid #d8d0bf', color: '#8b4a3f',
+                    fontFamily: 'inherit', fontSize: '13px', lineHeight: 1,
+                  }}>×</button>
+                </div>
+              ))}
+              <button onClick={addMealItem} style={{
+                padding: '5px', background: 'transparent',
+                border: '1px dashed #8a7d5e', color: '#6b5d3f',
+                fontFamily: 'inherit', fontSize: '11px',
+              }}>＋ 項目を追加</button>
+            </div>
+          </div>
+        )}
+
+        {section === 'workout' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '12px' }}>
+            {[1, 2, 3, 4, 5, 6, 0].map(dow => {
+              const slot = draftSchedule[dow];
+              const isRest = !slot.isTraining;
+              return (
+                <div key={dow} style={{ borderBottom: '1px solid #eae3d0', paddingBottom: '6px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                    <div style={{ fontSize: '13px', width: '24px' }}>{DAY_LABELS[dow]}</div>
+                    <button onClick={() => toggleRest(dow)} style={{
+                      padding: '3px 9px', fontSize: '10px',
+                      background: isRest ? 'transparent' : '#5a6b3f',
+                      color: isRest ? '#8a7d5e' : '#f5f1e8',
+                      border: '1px solid ' + (isRest ? '#d8d0bf' : '#5a6b3f'),
+                      fontFamily: 'inherit',
+                    }}>{isRest ? '休息日' : 'トレーニング日'}</button>
+                  </div>
+                  {!isRest && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', paddingLeft: '32px' }}>
+                      <input value={slot.name} onChange={(e) => updateDay(dow, 'name', e.target.value)} placeholder="メニュー名"
+                        style={{ padding: '4px 6px', background: 'transparent', border: '1px solid #d8d0bf', fontFamily: 'inherit', fontSize: '11px', color: '#2c2c2c' }} />
+                      <textarea value={slot.exText} onChange={(e) => updateDay(dow, 'exText', e.target.value)} placeholder="種目（1行に1種目）" rows={3}
+                        style={{ padding: '4px 6px', background: 'transparent', border: '1px solid #d8d0bf', resize: 'vertical', fontFamily: 'inherit', fontSize: '11px', color: '#2c2c2c' }} />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: '5px', marginBottom: '8px' }}>
+          <button onClick={onClose} style={{
+            flex: 1, padding: '7px', background: 'transparent',
+            border: '1px solid #8a7d5e', color: '#6b5d3f',
+            fontFamily: 'inherit', fontSize: '11px', letterSpacing: '0.1em',
+          }}>キャンセル</button>
+          <button onClick={handleSave} style={{
+            flex: 1, padding: '7px', background: '#2c2c2c',
+            border: '1px solid #2c2c2c', color: '#f5f1e8',
+            fontFamily: 'inherit', fontSize: '11px', letterSpacing: '0.1em',
+          }}>保存</button>
+        </div>
+
+        {/* ログアウト */}
+        <div style={{ borderTop: '1px solid #d8d0bf', paddingTop: '8px', marginTop: '6px' }}>
+          <button onClick={onSignOut} style={{
+            width: '100%', padding: '6px', background: 'transparent',
+            border: '1px solid #8b4a3f', color: '#8b4a3f',
+            fontFamily: 'inherit', fontSize: '10px', letterSpacing: '0.1em',
+          }}>ログアウト</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────
+// Root（認証管理）
+// ──────────────────────────────────────────────────────
+function Root() {
+  const [user, setUser] = useState(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [dataReady, setDataReady] = useState(false);
+
+  useEffect(() => {
+    const unsub = auth.onAuthStateChanged(async u => {
+      if (u) {
+        window.storage.uid = u.uid;
+        await window.storage.loadAll();
+        setUser(u);
+        setDataReady(true);
+      } else {
+        window.storage.reset();
+        setUser(null);
+        setDataReady(false);
+      }
+      setAuthReady(true);
+    });
+    return () => unsub();
+  }, []);
+
+  if (!authReady) return <Splash text="認証中…" />;
+  if (!user) return <LoginScreen onLogin={() => window.signInGoogle()} />;
+  if (!dataReady) return <Splash text="データ読み込み中…" />;
+
+  return <App onSignOut={() => window.signOutNow()} />;
+}
+
+function Splash({ text }) {
+  return (
+    <div style={{
+      background: '#f5f1e8', height: '100dvh',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      fontFamily: '"Hiragino Mincho ProN", "Yu Mincho", serif', color: '#3a3a3a',
+      fontSize: '13px',
+    }}>{text}</div>
+  );
+}
+
+function LoginScreen({ onLogin }) {
+  return (
+    <div style={{
+      background: '#f5f1e8', height: '100dvh',
+      display: 'flex', flexDirection: 'column',
+      alignItems: 'center', justifyContent: 'center',
+      padding: '40px 24px', gap: '14px',
+      fontFamily: '"Hiragino Mincho ProN", "Yu Mincho", serif', color: '#2c2c2c',
+      maxWidth: '393px', margin: '0 auto',
+    }}>
+      <div style={{ fontSize: '24px', letterSpacing: '0.15em', marginBottom: '4px' }}>習慣</div>
+      <div style={{ fontSize: '11px', color: '#8a7d5e', letterSpacing: '0.1em', marginBottom: '20px' }}>HABIT TRACKER</div>
+      <div style={{ fontSize: '12px', color: '#6b5d3f', textAlign: 'center', lineHeight: 1.7, marginBottom: '24px' }}>
+        食事とトレーニングの<br/>毎日を記録する
+      </div>
+      <button onClick={onLogin} style={{
+        background: '#2c2c2c', color: '#f5f1e8',
+        padding: '12px 32px', border: 'none',
+        fontFamily: 'inherit', fontSize: '13px', letterSpacing: '0.15em',
+      }}>Googleでログイン</button>
+      <div style={{ fontSize: '9px', color: '#8a7d5e', marginTop: '20px', textAlign: 'center', lineHeight: 1.6 }}>
+        ログイン後、データはあなたの<br/>Googleアカウントに紐づいて保存されます
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<Root />);
+</script>
+</body>
+</html>
