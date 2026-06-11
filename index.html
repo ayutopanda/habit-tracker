@@ -34,7 +34,7 @@
   input:focus, textarea:focus { outline: none; }
   button { cursor: pointer; transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease, border-color 0.12s ease; }
   button:active { opacity: 0.6; }
-  input::placeholder, textarea::placeholder { color: #555; }
+  input::placeholder, textarea::placeholder { color: #777; }
 </style>
 </head>
 <body>
@@ -115,9 +115,9 @@ const C = {
   border: '#2a2a2a',
   borderStrong: '#3a3a3a',
   text: '#fafafa',
-  textSub: '#a8a8a8',
-  textDim: '#666',
-  textFaint: '#333',
+  textSub: '#c0c0c0',
+  textDim: '#888',
+  textFaint: '#666',
   success: '#a3ff3d',
   fail: '#ff4470',
   today: '#fafafa',
@@ -393,20 +393,20 @@ function App({ onSignOut }) {
       fontVariantNumeric: 'tabular-nums',
     }}>
       <button onClick={() => setShowSettings(true)} style={{
-        position: 'absolute', top: 'calc(env(safe-area-inset-top) + 10px)', right: 14,
+        position: 'absolute', top: 'calc(env(safe-area-inset-top) + 8px)', right: 14,
         background: 'transparent', border: 'none',
-        fontSize: 22, color: C.textSub, padding: 4, lineHeight: 1,
+        fontSize: 24, color: C.textSub, padding: 6, lineHeight: 1,
         zIndex: 5,
       }}>⚙</button>
 
       {/* カレンダー（3週間）*/}
-      <div style={{ padding: '14px 20px 8px', flexShrink: 0 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 4, marginBottom: 6 }}>
+      <div style={{ padding: '36px 20px 8px', flexShrink: 0 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 4, marginBottom: 8 }}>
           {['日','月','火','水','木','金','土'].map((l, i) => (
             <div key={i} style={{
-              fontSize: 11, textAlign: 'center',
+              fontSize: 12, textAlign: 'center',
               color: (i === 0 || i === 6) ? C.textDim : C.textSub,
-              fontWeight: 700, letterSpacing: '0.05em',
+              fontWeight: 800, letterSpacing: '0.05em',
             }}>{l}</div>
           ))}
         </div>
@@ -418,22 +418,22 @@ function App({ onSignOut }) {
                      : 'transparent';
             const fg = c.status === 'success' ? '#0a0a0a'
                      : c.status === 'fail'    ? '#0a0a0a'
+                     : c.isTodayCell          ? C.success
                      : c.isFuture             ? C.textFaint
-                     : !c.isTarget            ? C.textFaint
-                     : c.isTodayCell          ? C.text
-                     : C.textSub;
+                     : !c.isTarget            ? C.textDim
+                     : C.text;
             const border = c.isSelectedCell ? `2px solid ${C.today}`
-                         : c.isTodayCell    ? `1.5px solid ${C.borderStrong}`
+                         : c.isTodayCell    ? `2px solid ${C.success}`
                          : `1px solid ${C.border}`;
-            const opacity = c.status ? 1 : (c.isTarget ? 1 : 0.5);
-            const fontWeight = c.status ? 800 : (c.isTodayCell ? 800 : 600);
+            const fontWeight = c.status ? 900 : (c.isTodayCell ? 900 : 700);
+            const fontSize = c.isTodayCell ? 16 : 14;
             return (
               <button key={i} onClick={() => setSelectedKey(c.key)}
                 style={{
                   aspectRatio: '1',
                   background: bg, border,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: 13, color: fg, fontWeight, opacity,
+                  fontSize, color: fg, fontWeight,
                   padding: 0,
                 }}>{c.date}</button>
             );
@@ -465,13 +465,13 @@ function App({ onSignOut }) {
           display: 'flex', justifyContent: 'space-between', alignItems: 'center',
           flexShrink: 0,
         }}>
-          <span style={{ fontSize: 13, color: C.text, fontWeight: 700 }}>
+          <span style={{ fontSize: 14, color: C.text, fontWeight: 800 }}>
             {formatDateShort(selectedDate)} {isFutureSelected && <span style={{ color: C.success, marginLeft: 4 }}>· 予定</span>}
           </span>
           <button onClick={() => setSelectedKey(today)} style={{
             background: 'transparent', border: `1px solid ${C.borderStrong}`,
             color: C.text,
-            fontSize: 11, padding: '4px 10px', fontWeight: 700,
+            fontSize: 12, padding: '5px 12px', fontWeight: 800,
             letterSpacing: '0.06em',
           }}>今日</button>
         </div>
@@ -484,12 +484,12 @@ function App({ onSignOut }) {
       }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', minWidth: 0 }}>
-            <span style={{ ...FONT_LABEL, fontSize: 12, color: C.text }}>
+            <span style={{ ...FONT_LABEL, fontSize: 13, color: C.text }}>
               {tab === 'workout' ? (effectiveMenuName || '休息日') : '本日の食事'}
             </span>
             {(isWorkoutCustomized && tab === 'workout') || (isMealCustomized && tab === 'meal') ? (
               <span style={{
-                fontSize: 9, letterSpacing: '0.1em', fontWeight: 800,
+                fontSize: 10, letterSpacing: '0.1em', fontWeight: 800,
                 color: C.fail, border: `1px solid ${C.fail}`,
                 padding: '2px 6px',
               }}>OVERRIDE</span>
@@ -500,14 +500,14 @@ function App({ onSignOut }) {
               <button onClick={() => setShowMenuPicker(true)} style={{
                 background: 'transparent', border: `1px solid ${C.borderStrong}`,
                 color: C.text,
-                fontSize: 12, padding: '5px 11px', fontWeight: 700,
+                fontSize: 13, padding: '6px 12px', fontWeight: 800,
                 letterSpacing: '0.04em',
               }}>切替</button>
             )}
             <button onClick={() => tab === 'workout' ? setShowWorkoutEdit(true) : setShowMealEdit(true)} style={{
               background: 'transparent', border: `1px solid ${C.borderStrong}`,
               color: C.text,
-              fontSize: 12, padding: '5px 11px', fontWeight: 700,
+              fontSize: 13, padding: '6px 12px', fontWeight: 800,
               letterSpacing: '0.04em',
             }}>編集</button>
           </div>
@@ -587,49 +587,49 @@ function App({ onSignOut }) {
 
                   <div style={{
                     display: 'flex', alignItems: 'center', gap: 4,
-                    marginTop: 6, paddingLeft: 34,
+                    marginTop: 8, paddingLeft: 34,
                   }}>
                     <input type="text" inputMode="decimal"
                       value={ex.weight || ''}
                       onChange={(e) => updateExercise(exName, { weight: e.target.value })}
                       placeholder="0"
                       style={{
-                        width: 48, padding: '6px 4px',
+                        width: 52, padding: '7px 4px',
                         background: C.surfaceAlt,
                         border: `1px solid ${ex.isInherited ? C.border : C.borderStrong}`,
-                        fontSize: 14, fontWeight: 800,
+                        fontSize: 16, fontWeight: 800,
                         color: valueColor,
                         textAlign: 'center',
                       }} />
-                    <span style={{ fontSize: 12, color: C.textSub, fontWeight: 700, marginRight: 3 }}>kg</span>
-                    <span style={{ fontSize: 13, color: C.textDim, fontWeight: 700, margin: '0 1px' }}>×</span>
+                    <span style={{ fontSize: 13, color: C.textSub, fontWeight: 800, marginRight: 4 }}>kg</span>
+                    <span style={{ fontSize: 14, color: C.textDim, fontWeight: 800, margin: '0 2px' }}>×</span>
                     <input type="text" inputMode="numeric"
                       value={ex.reps || ''}
                       onChange={(e) => updateExercise(exName, { reps: e.target.value })}
                       placeholder="0"
                       style={{
-                        width: 40, padding: '6px 4px',
+                        width: 44, padding: '7px 4px',
                         background: C.surfaceAlt,
                         border: `1px solid ${ex.isInherited ? C.border : C.borderStrong}`,
-                        fontSize: 14, fontWeight: 800,
+                        fontSize: 16, fontWeight: 800,
                         color: valueColor,
                         textAlign: 'center',
                       }} />
-                    <span style={{ fontSize: 12, color: C.textSub, fontWeight: 700, marginRight: 3 }}>回</span>
-                    <span style={{ fontSize: 13, color: C.textDim, fontWeight: 700, margin: '0 1px' }}>×</span>
+                    <span style={{ fontSize: 13, color: C.textSub, fontWeight: 800, marginRight: 4 }}>回</span>
+                    <span style={{ fontSize: 14, color: C.textDim, fontWeight: 800, margin: '0 2px' }}>×</span>
                     <input type="text" inputMode="numeric"
                       value={ex.sets || ''}
                       onChange={(e) => updateExercise(exName, { sets: e.target.value })}
                       placeholder="0"
                       style={{
-                        width: 34, padding: '6px 4px',
+                        width: 38, padding: '7px 4px',
                         background: C.surfaceAlt,
                         border: `1px solid ${ex.isInherited ? C.border : C.borderStrong}`,
-                        fontSize: 14, fontWeight: 800,
+                        fontSize: 16, fontWeight: 800,
                         color: valueColor,
                         textAlign: 'center',
                       }} />
-                    <span style={{ fontSize: 12, color: C.textSub, fontWeight: 700 }}>セット</span>
+                    <span style={{ fontSize: 13, color: C.textSub, fontWeight: 800 }}>セット</span>
                   </div>
                 </div>
               );
@@ -666,9 +666,9 @@ function App({ onSignOut }) {
               value={current.memo || ''}
               onChange={(e) => update(tab, { memo: e.target.value })}
               style={{
-                padding: '10px 12px', background: C.surface,
+                padding: '12px 14px', background: C.surface,
                 border: `1px solid ${C.border}`,
-                fontSize: 13, color: C.text, fontWeight: 500,
+                fontSize: 14, color: C.text, fontWeight: 600,
               }}
             />
           </>
