@@ -393,14 +393,14 @@ function App({ onSignOut }) {
       fontVariantNumeric: 'tabular-nums',
     }}>
       <button onClick={() => setShowSettings(true)} style={{
-        position: 'absolute', top: 'calc(env(safe-area-inset-top) + 8px)', right: 14,
+        position: 'absolute', top: 'calc(env(safe-area-inset-top) + 18px)', right: 16,
         background: 'transparent', border: 'none',
         fontSize: 24, color: C.textSub, padding: 6, lineHeight: 1,
         zIndex: 5,
       }}>⚙</button>
 
       {/* カレンダー（3週間）*/}
-      <div style={{ padding: '36px 20px 8px', flexShrink: 0 }}>
+      <div style={{ padding: '52px 20px 14px', flexShrink: 0 }}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 4, marginBottom: 8 }}>
           {['日','月','火','水','木','金','土'].map((l, i) => (
             <div key={i} style={{
@@ -524,7 +524,7 @@ function App({ onSignOut }) {
               return (
                 <button key={it.id} onClick={() => toggleMeal(it.id)} style={{
                   display: 'flex', alignItems: 'center', gap: 14,
-                  padding: '12px 6px',
+                  padding: '18px 6px',
                   background: on ? 'rgba(163, 255, 61, 0.06)' : 'transparent',
                   border: 'none',
                   borderBottom: `1px solid ${C.border}`,
