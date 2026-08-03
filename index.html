@@ -191,11 +191,12 @@ function App({ onSignOut }) {
   const todayDate = new Date();
   const today = dateKey(todayDate);
 
-  const [viewMonth, setViewMonth] = useState(() => ({ y: todayDate.getFullYear(), m: todayDate.getMonth() }));
+  const [anchorKey, setAnchorKey] = useState(today);
+  const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
     setSelectedKey(today);
-    setViewMonth({ y: todayDate.getFullYear(), m: todayDate.getMonth() });
+    setAnchorKey(today);
   }, [tab]);
 
   useEffect(() => { loadData(); }, []);
@@ -374,17 +375,39 @@ function App({ onSignOut }) {
     return sched[d.getDay()].ex.length > 0;
   }
 
-  function buildCalendar(kind) {
-    const { y, m } = viewMonth;
-    const firstOfMonth = new Date(y, m, 1);
-    const startOffset = firstOfMonth.getDay();
-    const daysInMonth = new Date(y, m + 1, 0).getDate();
-    const totalCells = Math.ceil((startOffset + daysInMonth) / 7) * 7;
-    const todayKey = dateKey(new Date());
+  const anchorDate = parseKey(anchorKey);
 
+  function weekStartOf(d) {
+    const s = new Date(d);
+    s.setDate(d.getDate() - d.getDay());
+    return s;
+  }
+
+  // ラベル用の月：週表示のときは週の水曜が属する月
+  const labelDate = expanded
+    ? new Date(anchorDate.getFullYear(), anchorDate.getMonth(), 1)
+    : (() => { const s = weekStartOf(anchorDate); s.setDate(s.getDate() + 3); return s; })();
+  const labelY = labelDate.getFullYear();
+  const labelM = labelDate.getMonth();
+
+  function buildCalendar(kind) {
+    const todayKey = dateKey(new Date());
     const cells = [];
-    for (let i = 0; i < totalCells; i++) {
-      const d = new Date(y, m, 1 - startOffset + i);
+    let start, count;
+
+    if (expanded) {
+      const startOffset = new Date(labelY, labelM, 1).getDay();
+      const daysInMonth = new Date(labelY, labelM + 1, 0).getDate();
+      start = new Date(labelY, labelM, 1 - startOffset);
+      count = Math.ceil((startOffset + daysInMonth) / 7) * 7;
+    } else {
+      start = weekStartOf(anchorDate);
+      count = 7;
+    }
+
+    for (let i = 0; i < count; i++) {
+      const d = new Date(start);
+      d.setDate(start.getDate() + i);
       const key = dateKey(d);
       const status = data[key]?.[kind]?.status || null;
       cells.push({
@@ -395,14 +418,14 @@ function App({ onSignOut }) {
         isTodayCell: key === todayKey,
         isSelectedCell: key === selectedKey,
         isTarget: isTargetDay(kind, d),
-        isOtherMonth: d.getMonth() !== m,
+        isOtherMonth: expanded && d.getMonth() !== labelM,
       });
     }
     return cells;
   }
 
   function monthStats(kind) {
-    const { y, m } = viewMonth;
+    const y = labelY, m = labelM;
     const daysInMonth = new Date(y, m + 1, 0).getDate();
     const todayKey = dateKey(new Date());
     let target = 0, success = 0;
@@ -437,11 +460,19 @@ function App({ onSignOut }) {
     return streak;
   }
 
-  function shiftMonth(delta) {
-    setViewMonth(v => {
-      const d = new Date(v.y, v.m + delta, 1);
-      return { y: d.getFullYear(), m: d.getMonth() };
-    });
+  function shift(delta) {
+    const d = parseKey(anchorKey);
+    if (expanded) {
+      setAnchorKey(dateKey(new Date(d.getFullYear(), d.getMonth() + delta, 1)));
+    } else {
+      d.setDate(d.getDate() + delta * 7);
+      setAnchorKey(dateKey(d));
+    }
+  }
+
+  function goToday() {
+    setSelectedKey(today);
+    setAnchorKey(today);
   }
 
   if (loading) {
@@ -502,42 +533,50 @@ function App({ onSignOut }) {
       position: 'relative', overflow: 'hidden',
       fontVariantNumeric: 'tabular-nums',
     }}>
-      <button onClick={() => setShowSettings(true)} style={{
-        position: 'absolute', top: 'calc(env(safe-area-inset-top) + 14px)', right: 16,
-        background: 'transparent', border: 'none',
-        fontSize: 24, color: C.textSub, padding: 6, lineHeight: 1,
-        zIndex: 5,
-      }}>⚙</button>
-
-      {/* 月ナビ */}
+      {/* ヘッダー：ナビ＋設定を1行に */}
       <div style={{
-        padding: '18px 20px 0',
+        padding: '14px 16px 0',
         display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0,
       }}>
-        <button onClick={() => shiftMonth(-1)} style={{
+        <button onClick={() => shift(-1)} style={{
           background: 'transparent', border: `1px solid ${C.border}`,
-          color: C.text, width: 34, height: 30, padding: 0,
+          color: C.text, width: 32, height: 32, padding: 0, flexShrink: 0,
           fontSize: 15, fontWeight: 800, lineHeight: 1,
         }}>‹</button>
-        <div style={{
-          flex: 1, textAlign: 'center',
-          fontSize: 15, fontWeight: 900, letterSpacing: '0.04em',
+
+        <button onClick={() => setExpanded(e => !e)} style={{
+          flex: 1, minWidth: 0, height: 32,
+          background: 'transparent', border: 'none', padding: 0,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+          color: C.text,
         }}>
-          {viewMonth.y}年{viewMonth.m + 1}月
-          <span style={{ fontSize: 11, color: C.textDim, fontWeight: 700, marginLeft: 8 }}>
+          <span style={{ fontSize: 15, fontWeight: 900, letterSpacing: '0.02em', whiteSpace: 'nowrap' }}>
+            {labelY}年{labelM + 1}月
+          </span>
+          <span style={{ fontSize: 11, color: C.textDim, fontWeight: 700 }}>
             {stats.success}/{stats.target}
           </span>
-        </div>
-        <button onClick={() => shiftMonth(1)} style={{
+          <span style={{ fontSize: 10, color: C.textSub, fontWeight: 800, lineHeight: 1 }}>
+            {expanded ? '▲' : '▼'}
+          </span>
+        </button>
+
+        <button onClick={() => shift(1)} style={{
           background: 'transparent', border: `1px solid ${C.border}`,
-          color: C.text, width: 34, height: 30, padding: 0,
+          color: C.text, width: 32, height: 32, padding: 0, flexShrink: 0,
           fontSize: 15, fontWeight: 800, lineHeight: 1,
         }}>›</button>
+
+        <button onClick={() => setShowSettings(true)} style={{
+          background: 'transparent', border: 'none',
+          width: 32, height: 32, padding: 0, flexShrink: 0,
+          fontSize: 21, color: C.textSub, lineHeight: 1,
+        }}>⚙</button>
       </div>
 
       {/* カレンダー */}
-      <div style={{ padding: '10px 20px 12px', flexShrink: 0 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 4, marginBottom: 6 }}>
+      <div style={{ padding: '8px 16px 10px', flexShrink: 0 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 4, marginBottom: 5 }}>
           {DAY_LABELS_JP.map((l, i) => (
             <div key={i} style={{
               fontSize: 11, textAlign: 'center',
@@ -564,16 +603,12 @@ function App({ onSignOut }) {
                          : `1px solid ${c.isOtherMonth ? '#1a1a1a' : C.border}`;
             const fontWeight = c.status ? 900 : (c.isTodayCell ? 900 : 700);
             return (
-              <button key={i} onClick={() => {
-                  setSelectedKey(c.key);
-                  const d = parseKey(c.key);
-                  if (d.getMonth() !== viewMonth.m) setViewMonth({ y: d.getFullYear(), m: d.getMonth() });
-                }}
+              <button key={i} onClick={() => { setSelectedKey(c.key); setAnchorKey(c.key); }}
                 style={{
-                  aspectRatio: '1',
+                  height: expanded ? 32 : 42,
                   background: bg, border,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: c.isTodayCell ? 15 : 13, color: fg, fontWeight,
+                  fontSize: c.isTodayCell ? 16 : 14, color: fg, fontWeight,
                   padding: 0,
                 }}>{c.date}</button>
             );
@@ -609,10 +644,7 @@ function App({ onSignOut }) {
           <span style={{ fontSize: 14, color: C.text, fontWeight: 800 }}>
             {formatDateShort(selectedDate)} {isFutureSelected && <span style={{ color: C.success, marginLeft: 4 }}>· 予定</span>}
           </span>
-          <button onClick={() => {
-            setSelectedKey(today);
-            setViewMonth({ y: todayDate.getFullYear(), m: todayDate.getMonth() });
-          }} style={{
+          <button onClick={goToday} style={{
             background: 'transparent', border: `1px solid ${C.borderStrong}`,
             color: C.text,
             fontSize: 12, padding: '5px 12px', fontWeight: 800,
