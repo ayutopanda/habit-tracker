@@ -402,7 +402,8 @@ function App({ onSignOut }) {
       count = Math.ceil((startOffset + daysInMonth) / 7) * 7;
     } else {
       start = weekStartOf(anchorDate);
-      count = 7;
+      start.setDate(start.getDate() - 14);
+      count = 21;
     }
 
     for (let i = 0; i < count; i++) {
@@ -605,7 +606,7 @@ function App({ onSignOut }) {
             return (
               <button key={i} onClick={() => { setSelectedKey(c.key); setAnchorKey(c.key); }}
                 style={{
-                  height: expanded ? 32 : 42,
+                  height: expanded ? 32 : 38,
                   background: bg, border,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontSize: c.isTodayCell ? 16 : 14, color: fg, fontWeight,
